@@ -3,7 +3,7 @@ PLD - Programming Language Detector
 Use to detect type of programming language, either C, C#, Java, or Python
 
 Methods:
-1. Natural Language Processing (NLP) \
+1. Natural Language Processing (NLP) 
 2. Computer Vision
 
 Main Specs:

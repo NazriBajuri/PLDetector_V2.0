@@ -1,4 +1,4 @@
-PLD - Programming Language Detector 
+# PLD - Programming Language Detector 
 
 Use to detect type of programming language, either C, C#, Java, or Python
 

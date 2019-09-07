@@ -1,0 +1,858 @@
+﻿//
+//   Copyright © 2010 Michael Feingold
+//
+//   Licensed under the Apache License, Version 2.0 (the "License");
+//   you may not use this file except in compliance with the License.
+//   You may obtain a copy of the License at
+//       http://www.apache.org/licenses/LICENSE-2.0
+//   Unless required by applicable law or agreed to in writing, software
+//   distributed under the License is distributed on an "AS IS" BASIS,
+//   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+//   See the License for the specific language governing permissions and
+//   limitations under the License.
+
+using System.Collections.Generic;
+using System.Linq;
+using Boo.Lang.Compiler.TypeSystem.Internal;
+using Microsoft.VisualStudio.Package;
+using Boo.Lang.Compiler.TypeSystem;
+using Boo.Lang.Compiler.Ast;
+namespace Hill30.Boo.ASTMapper
+{
+    /// <summary>
+    /// Represents a collection of items to be shown in member selection dropdowns
+    /// </summary>
+    /// <remarks>
+    /// The actual list is based on the list of members of the IType object passed in when the collection is created.
+    /// The member list is further filtered and formatted.
+    /// Filtering: only methods, properties, fields and events are included. Also access modifiers are taken into consideration
+    /// Formatting: 3 items displayed include name, description and icon. 
+    /// Name: is a short name of the member for overloaded methods only one item is included in the list.
+    /// Standard VS icons are selected based on the member type and access modifiers. 
+    /// Description consists of Full name of the member including the signature. For overloaded methods this will be a description 
+    /// of the first method of the group plus the number of other overloads
+    /// </remarks>
+    
+    // TODO: method description does not include parameter description
+    // TODO: double check the list of members to be included
+    // TODO: double check filtering of the private members
+    // TODO: implement filtering for the protected members
+    public class BooDeclarations : Declarations
+    {
+        private class Declaration
+        {
+            public string DisplayText { get; set; }
+            public string Description { get; set; }
+            public int ImageIndex { get; set; }
+            public int Count { get; set; }
+        }
+        private readonly SortedList<string, Declaration> list = new SortedList<string, Declaration>();
+        public BooDeclarations()
+        public BooDeclarations(Node context, IType varType, bool instance)
+            if (varType != null)
+                foreach (var member in varType.GetMembers())
+                {
+                    switch (member.EntityType)
+                    {
+                        case EntityType.Method:
+                            FormatMethod(context, (IMethod)member, instance);
+                            break;
+                        case EntityType.Property:
+                            FormatProperty(context, (IProperty)member, instance);
+                        case EntityType.Event:
+                            FormatEvent(context, (IEvent)member, instance);
+                        case EntityType.Field:
+                            FormatField(context, (IField)member, instance);
+                    }
+                }
+            //for (var i = 1000; i < 1300; i += 6)
+            //    list.Add("a" + i, new Declaration { DisplayText = "a" + i, ImageIndex = i - 1000 });
+        private static bool IsContextPrivate(Node context, IType type)
+            if (context == null)
+                return false;
+            if (context.NodeType == NodeType.ClassDefinition && TypeSystemServices.GetType(context) == type)
+                    return true;
+            if (context.NodeType == NodeType.StructDefinition && TypeSystemServices.GetType(context) == type)
+                return true;
+            return IsContextPrivate(context.ParentNode, type);
+        private static bool IsContextProtected(Node context, IType type)
+            return IsContextProtected(context.ParentNode, type);
+        private void FormatField(Node context, IField field, bool instance)
+            if (field.IsStatic == instance)
+                return;
+            if (
+                field.IsPublic ||
+                field.IsInternal && (field is InternalField) ||
+                field.IsProtected && IsContextProtected(context, field.DeclaringType) ||
+                field.IsPrivate && IsContextPrivate(context, field.DeclaringType)
+                )
+            {
+                var name = field.Name;
+                var description = name + " as " + field.Type;
+                list.Add(name,
+                    new Declaration
+                        DisplayText = name,
+                        Description = description,
+                        ImageIndex = GetIconForNode(NodeType.Field, field.IsPublic, field.IsInternal, field.IsProtected, field.IsPrivate)
+                    });
+            }
+        private void FormatEvent(Node context, IEvent @event, bool instance)
+            if (@event.IsStatic == instance)
+                @event.IsPublic
+                || IsContextPrivate(context, @event.Type)
+                var name = @event.Name;
+                var description = name + " as " + @event.Type;
+                        // Hmm... if it is not public - is it protected? or internal? let us make it private
+                        ImageIndex = GetIconForNode(NodeType.Event, @event.IsPublic, /* @event.IsInternal */ false, /*@event.IsProtected*/ false, !@event.IsPublic)
+        private void FormatProperty(Node context, IProperty property, bool instance)
+            if (property.IsStatic == instance)
+                property.IsPublic ||
+                property.IsInternal && (property is InternalField) ||
+                property.IsProtected && IsContextProtected(context, property.DeclaringType) ||
+                property.IsPrivate && IsContextPrivate(context, property.DeclaringType)
+                var name = property.Name;
+                var description = name + " as " + property.Type;
+                if (property.IsExtension)
+                    description = "(extension) " + description;
+                        {
+                            DisplayText = name,
+                            Description = description,
+                            ImageIndex = GetIconForNode(NodeType.Property, property.IsPublic, property.IsInternal, property.IsProtected, property.IsPrivate)
+                        });
+        private void FormatMethod(Node context, IMethod method, bool instance)
+            if (method.IsAbstract)
+            if (method.IsSpecialName)
+            if (method.IsStatic == instance)
+                method.IsPublic ||
+                method.IsInternal && (method is InternalField) ||
+                method.IsProtected && IsContextProtected(context, method.DeclaringType) ||
+                method.IsPrivate && IsContextPrivate(context, method.DeclaringType)
+                var name = method.Name;
+                Declaration declaration;
+                if (list.TryGetValue(name, out declaration))
+                    declaration.Count++;
+                    return;
+                var description = name + " as " + method.ReturnType;
+                if (method.IsExtension)
+                list.Add(name, new Declaration
+                        ImageIndex = GetIconForNode(NodeType.Method, method.IsPublic, method.IsInternal, method.IsProtected, method.IsPrivate)
+        public override int GetCount()
+            return list.Count();
+        public override string GetDescription(int index)
+            if (list.Values[index].Count == 0)
+                return list.Values[index].Description;
+            return list.Values[index].Description + " (+" + list.Values[index].Count + " overload(s))";
+        public override string GetDisplayText(int index)
+            return list.Values[index].DisplayText;
+        public override int GetGlyph(int index)
+            return list.Values[index].ImageIndex;
+        public override string GetName(int index)
+            return list.Keys[index];
+        public static int GetIconForNode(TypeMember node)
+            return GetIconForNode(node.NodeType, node.IsPublic, node.IsInternal, node.IsProtected, node.IsPrivate);
+        public static int GetIconForNode(NodeType type, bool isPublic, bool isInternal, bool isProtected, bool isPrivate)
+            var result = int.MinValue;
+            switch (type)
+                case NodeType.Module:
+                    result = MODULE_ICONS;
+                    break;
+                case NodeType.ClassDefinition:
+                    result = CLASS_ICONS;
+                case NodeType.EnumDefinition:
+                    result = ENUM_ICONS;
+                case NodeType.StructDefinition:
+                    result = STRUCT_ICONS;
+                case NodeType.InterfaceDefinition:
+                    result = INTERFACE_ICONS;
+                case NodeType.EnumMember:
+                    result = ENUM_MEMBER_ICONS;
+                case NodeType.Method:
+                case NodeType.Constructor:
+                case NodeType.Destructor:
+                    result = METHOD_ICONS;
+                case NodeType.Property:
+                    result = PROPERTY_ICONS;
+                case NodeType.Field:
+                    result = FIELD_ICONS;
+                case NodeType.Event:
+                    result = EVENT_ICONS;
+            if (isPublic)
+                result += ICON_PUBLIC;
+            if (isPrivate)
+                result += ICON_PRIVATE;
+            if (isInternal)
+                result += ICON_INTERNAL;
+            else if (isProtected) // if it is internal protected, only the internal icon is shown
+                result += ICON_PROTECTED;
+            return result;
+        // ReSharper disable InconsistentNaming
+        const int CLASS_ICONS = 0;
+        //const int CONST_ICONS = 6;
+        //const int DELEGATE_ICONS = 12;
+        const int ENUM_ICONS = 18;
+        const int ENUM_MEMBER_ICONS = 24;
+        const int EVENT_ICONS = 30;
+        const int FIELD_ICONS = 42;
+        const int INTERFACE_ICONS = 48;
+        const int METHOD_ICONS = 72;
+        const int MODULE_ICONS = 84;
+        const int PROPERTY_ICONS = 102;
+        const int STRUCT_ICONS = 108;
+        const int ICON_PUBLIC = 0;
+        const int ICON_INTERNAL = 1;
+        //const int ICON_DIAMOND = 2;
+        const int ICON_PROTECTED = 3;
+        const int ICON_PRIVATE = 4;
+        //const int ICON_REFERENCE = 5;
+        // ReSharper restore InconsistentNaming
+    }
+}
+/***************************************************************************
+Copyright (c) Microsoft Corporation. All rights reserved.
+This code is licensed under the Visual Studio SDK license terms.
+THIS CODE IS PROVIDED *AS IS* WITHOUT WARRANTY OF
+ANY KIND, EITHER EXPRESS OR IMPLIED, INCLUDING ANY
+IMPLIED WARRANTIES OF FITNESS FOR A PARTICULAR
+PURPOSE, MERCHANTABILITY, OR NON-INFRINGEMENT.
+***************************************************************************/
+using System;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.Globalization;
+namespace Microsoft.VisualStudio.Project
+	/// <summary>
+	/// Defines a type converter.
+	/// </summary>
+	/// <remarks>This is needed to get rid of the type TypeConverter type that could not give back the Type we were passing to him.
+	/// We do not want to use reflection to get the type back from the  ConverterTypeName. Also the GetType methos does not spwan converters from other assemblies.</remarks>
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Design",CA1019:DefineAccessorsForAttributeArguments), AttributeUsage(AttributeTargets.Class | AttributeTargets.Enum | AttributeTargets.Property | AttributeTargets.Field)]
+	public sealed class PropertyPageTypeConverterAttribute : Attribute
+	{
+		#region fields
+		Type converterType;
+		#endregion
+		#region ctors
+		public PropertyPageTypeConverterAttribute(Type type)
+		{
+			this.converterType = type;
+		}
+		#region properties
+		public Type ConverterType
+			get
+			{
+				return this.converterType;
+			}
+	}
+	[AttributeUsage(AttributeTargets.Class | AttributeTargets.Property | AttributeTargets.Field, Inherited = false, AllowMultiple = false)]
+	internal sealed class LocDisplayNameAttribute : DisplayNameAttribute
+		string name;
+		public LocDisplayNameAttribute(string name)
+			this.name = name;
+		public override string DisplayName
+				string result = SR.GetString(this.name, CultureInfo.CurrentUICulture);
+				if(result == null)
+				{
+					Debug.Assert(false,String resource ' + this.name + "' is missing");
+					result = this.name;
+				}
+				return result;
+using Microsoft.VisualStudio.Project;
+using System.Runtime.Versioning;
+using Hill30.BooProject.Project.Attributes;
+using System.IO;
+using Microsoft.VisualStudio;
+using System.Windows.Forms;
+using Microsoft.VisualStudio.Shell.Interop;
+using LocDisplayNameAttribute = Hill30.BooProject.Project.Attributes.LocDisplayNameAttribute;
+namespace Hill30.BooProject.Project.ProjectProperties
+	public class Application : SettingsPage
+        #region Fields
+        private string assemblyName;
+        private OutputType outputType;
+        private string defaultNamespace;
+        private string startupObject;
+        private string applicationIcon;
+        private FrameworkName targetFrameworkMoniker;
+        private bool allowUnsafe;
+        private bool useDuckTyping;
+        #endregion Fields
+        #region Constructors
+        /// <summary>
+        /// Explicitly defined default constructor.
+        /// </summary>
+        public Application()
+            Name = Resources.GetString(Resources.ApplicationCaption);
+        #endregion
+        #region Properties
+        /// Gets or sets Assembly Name.
+        /// <remarks>IsDirty flag was switched to true.</remarks>
+        [ResourcesCategoryAttribute(Resources.AssemblyName)]
+        [LocDisplayName(Resources.AssemblyName)]
+        [ResourcesDescriptionAttribute(Resources.AssemblyNameDescription)]
+        public string AssemblyName
+            get { return assemblyName; }
+            set { assemblyName = value; IsDirty = true; }
+        /// Gets or sets OutputType.
+        [ResourcesCategoryAttribute(Resources.Application)]
+        [LocDisplayName(Resources.OutputType)]
+        [ResourcesDescriptionAttribute(Resources.OutputTypeDescription)]
+        public OutputType OutputType
+            get { return outputType; }
+            set { outputType = value; IsDirty = true; }
+        /// Gets or sets Default Namespace.
+        [LocDisplayName(Resources.DefaultNamespace)]
+        [ResourcesDescriptionAttribute(Resources.DefaultNamespaceDescription)]
+        public string DefaultNamespace
+            get { return defaultNamespace; }
+            set { defaultNamespace = value; IsDirty = true; }
+        /// Gets or sets Startup Object.
+        [LocDisplayName(Resources.StartupObject)]
+        [ResourcesDescriptionAttribute(Resources.StartupObjectDescription)]
+        public string StartupObject
+            get { return startupObject; }
+            set { startupObject = value; IsDirty = true; }
+        /// Gets or sets Application Icon.
+        [LocDisplayName(Resources.ApplicationIcon)]
+        [ResourcesDescriptionAttribute(Resources.ApplicationIconDescription)]
+        public string ApplicationIcon
+            get { return applicationIcon; }
+            set { applicationIcon = value; IsDirty = true; }
+        [ResourcesCategoryAttribute(Resources.GeneralCaption)]
+        [LocDisplayName(Resources.AllowUnsafe)]
+        [ResourcesDescriptionAttribute(Resources.AllowUnsafeDescription)]
+        public bool AllowUnsafe
+            get { return allowUnsafe; }
+            set { allowUnsafe = value; IsDirty = true; }
+        [LocDisplayName(Resources.UseDuckTyping)]
+        [ResourcesDescriptionAttribute(Resources.UseDuckTypingDescription)]
+        public bool UseDuckTyping
+            get { return useDuckTyping; }
+            set { useDuckTyping = value; IsDirty = true; }
+        /// Gets the path to the project file.
+        [ResourcesCategoryAttribute(Resources.Project)]
+        [LocDisplayName(Resources.ProjectFile)]
+        [ResourcesDescriptionAttribute(Resources.ProjectFileDescription)]
+        public string ProjectFile
+            get { return Path.GetFileName(ProjectMgr.ProjectFile); }
+        /// Gets the path to the project folder.
+        [LocDisplayName(Resources.ProjectFolder)]
+        [ResourcesDescriptionAttribute(Resources.ProjectFolderDescription)]
+        public string ProjectFolder
+            get { return Path.GetDirectoryName(ProjectMgr.ProjectFolder); }
+        /// Gets the output file name depending on current OutputType.
+        [LocDisplayName(Resources.OutputFile)]
+        [ResourcesDescriptionAttribute(Resources.OutputFileDescription)]
+        public string OutputFile
+            get
+                switch (outputType)
+                    case OutputType.Exe:
+                    case OutputType.WinExe:
+                            return assemblyName + ".exe";
+                        }
+                    default:
+                            return assemblyName + ".dll";
+        /// Gets or sets Target Platform PlatformType.
+        [LocDisplayName(Resources.TargetFrameworkMoniker)]
+        [ResourcesDescriptionAttribute(Resources.TargetFrameworkMonikerDescription)]
+        [PropertyPageTypeConverter(typeof(FrameworkNameConverter))]
+        public FrameworkName TargetFrameworkMoniker
+            get { return targetFrameworkMoniker; }
+            set { targetFrameworkMoniker = value; IsDirty = true; }
+        #region Overriden Implementation
+        /// Bind properties.
+        protected override void BindProperties()
+            if (ProjectMgr == null)
+            assemblyName = ProjectMgr.GetProjectProperty("AssemblyName", true);
+            var temp = ProjectMgr.GetProjectProperty("OutputType", false);
+            if (!string.IsNullOrEmpty(temp))
+                try
+                    outputType = (OutputType)Enum.Parse(typeof(OutputType), temp);
+                catch (ArgumentException)
+            defaultNamespace = ProjectMgr.GetProjectProperty("RootNamespace", false);
+            startupObject = ProjectMgr.GetProjectProperty("StartupObject", false);
+            applicationIcon = ProjectMgr.GetProjectProperty("ApplicationIcon", false);
+            Boolean.TryParse(ProjectMgr.GetProjectProperty("AllowUnsafeBlocks", false), out allowUnsafe);
+            Boolean.TryParse(ProjectMgr.GetProjectProperty("Ducky", false), out useDuckTyping);
+            try
+                targetFrameworkMoniker = ProjectMgr.TargetFrameworkMoniker;
+            catch (ArgumentException)
+        /// Apply Changes on project node.
+        /// <returns>E_INVALIDARG if internal ProjectMgr is null, otherwise applies changes and return S_OK.</returns>
+        protected override int ApplyChanges()
+                return VSConstants.E_INVALIDARG;
+            var propertyPageFrame = (IVsPropertyPageFrame)ProjectMgr.Site.GetService((typeof(SVsPropertyPageFrame)));
+            bool reloadRequired = ProjectMgr.TargetFrameworkMoniker != targetFrameworkMoniker;
+            ProjectMgr.SetProjectProperty("AssemblyName", assemblyName);
+            ProjectMgr.SetProjectProperty("OutputType", outputType.ToString());
+            ProjectMgr.SetProjectProperty("RootNamespace", defaultNamespace);
+            ProjectMgr.SetProjectProperty("StartupObject", startupObject);
+            ProjectMgr.SetProjectProperty("ApplicationIcon", applicationIcon);
+            ProjectMgr.SetProjectProperty("AllowUnsafeBlocks", allowUnsafe.ToString());
+            ProjectMgr.SetProjectProperty("Ducky", useDuckTyping.ToString());
+            if (reloadRequired)
+                if (MessageBox.Show(SR.GetString(SR.ReloadPromptOnTargetFxChanged), SR.GetString(SR.ReloadPromptOnTargetFxChangedCaption), MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+                    ProjectMgr.TargetFrameworkMoniker = targetFrameworkMoniker;
+            IsDirty = false;
+                // This prevents the property page from displaying bad data from the zombied (unloaded) project
+                propertyPageFrame.HideFrame();
+                propertyPageFrame.ShowFrame(GetType().GUID);
+            return VSConstants.S_OK;
+using System.Collections;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using Microsoft.VisualStudio.Shell;
+using MSBuild = Microsoft.Build.Evaluation;
+using MSBuildExecution = Microsoft.Build.Execution;
+using Microsoft.Build.Evaluation;
+using Microsoft.Build.Framework;
+	[CLSCompliant(false)]
+	[ComVisible(true)]
+	public class AssemblyReferenceNode : ReferenceNode
+		#region fieds
+		/// <summary>
+		/// The name of the assembly this refernce represents
+		/// </summary>
+		private System.Reflection.AssemblyName assemblyName;
+		private AssemblyName resolvedAssemblyName;
+		private string assemblyPath = String.Empty;
+		/// Defines the listener that would listen on file changes on the nested project node.
+		private FileChangeManager fileChangeListener;
+		/// A flag for specifying if the object was disposed.
+		private bool isDisposed;
+		/// The name of the assembly this reference represents.
+		/// <value></value>
+		public System.Reflection.AssemblyName AssemblyName
+				return this.assemblyName;
+		/// Returns the name of the assembly this reference refers to on this specific
+		/// machine. It can be different from the AssemblyName property because it can
+		/// be more specific.
+		internal System.Reflection.AssemblyName ResolvedAssembly
+			get { return resolvedAssemblyName; }
+		public override string Url
+				return this.assemblyPath;
+		public override string Caption
+				return this.assemblyName.Name;
+		private Automation.OAAssemblyReference assemblyRef;
+		internal override object Object
+				if(null == assemblyRef)
+					assemblyRef = new Automation.OAAssemblyReference(this);
+				return assemblyRef;
+		/// Constructor for the ReferenceNode
+		public AssemblyReferenceNode(ProjectNode root, ProjectElement element)
+			: base(root, element)
+			this.GetPathNameFromProjectFile();
+			this.InitializeFileChangeEvents();
+			string include = this.ItemNode.GetMetadata(ProjectFileConstants.Include);
+			this.CreateFromAssemblyName(new System.Reflection.AssemblyName(include));
+		/// Constructor for the AssemblyReferenceNode
+		public AssemblyReferenceNode(ProjectNode root, string assemblyPath)
+			: base(root)
+			// Validate the input parameters.
+			if(null == root)
+				throw new ArgumentNullException("root");
+			if(string.IsNullOrEmpty(assemblyPath))
+				throw new ArgumentNullException("assemblyPath");
+			// The assemblyPath variable can be an actual path on disk or a generic assembly name.
+			if(File.Exists(assemblyPath))
+				// The assemblyPath parameter is an actual file on disk; try to load it.
+				this.assemblyName = System.Reflection.AssemblyName.GetAssemblyName(assemblyPath);
+				this.assemblyPath = assemblyPath;
+				// We register with listeningto chnages onteh path here. The rest of teh cases will call into resolving the assembly and registration is done there.
+				this.fileChangeListener.ObserveItem(this.assemblyPath);
+			else
+				// The file does not exist on disk. This can be because the file / path is not
+				// correct or because this is not a path, but an assembly name.
+				// Try to resolve the reference as an assembly name.
+				this.CreateFromAssemblyName(new System.Reflection.AssemblyName(assemblyPath));
+		#region methods
+		/// Closes the node.
+		/// <returns></returns>
+		public override int Close()
+			try
+				this.Dispose(true);
+			finally
+				base.Close();
+			return VSConstants.S_OK;
+		/// Links a reference node to the project and hierarchy.
+		protected override void BindReferenceData()
+			Debug.Assert(this.assemblyName != null,The AssemblyName field has not been initialized);
+			// If the item has not been set correctly like in case of a new reference added it now.
+			// The constructor for the AssemblyReference node will create a default project item. In that case the Item is null.
+			// We need to specify here the correct project element. 
+			if(this.ItemNode == null || this.ItemNode.Item == null)
+				this.ItemNode = new ProjectElement(this.ProjectMgr, this.assemblyName.FullName, ProjectFileConstants.Reference);
+			// Set the basic information we know about
+			this.ItemNode.SetMetadata(ProjectFileConstants.Name, this.assemblyName.Name);
+			if (!string.IsNullOrEmpty(this.assemblyPath))
+				this.ItemNode.SetMetadata(ProjectFileConstants.AssemblyName, Path.GetFileName(this.assemblyPath));
+				this.ItemNode.SetMetadata(ProjectFileConstants.AssemblyName, null);
+			this.SetReferenceProperties();
+		/// Disposes the node
+		/// <param name="disposing"></param>
+		protected override void Dispose(bool disposing)
+			if(this.isDisposed)
+				return;
+				this.UnregisterFromFileChangeService();
+				base.Dispose(disposing);
+				this.isDisposed = true;
+		private void CreateFromAssemblyName(AssemblyName name)
+			this.assemblyName = name;
+			// Use MsBuild to resolve the assemblyname 
+			this.ResolveAssemblyReference();
+			if(String.IsNullOrEmpty(this.assemblyPath) && (null != this.ItemNode.Item))
+				// Try to get the assmbly name from the hintpath.
+				this.GetPathNameFromProjectFile();
+				if(this.assemblyPath == null)
+					// Try to get the assembly name from the path
+					this.assemblyName = System.Reflection.AssemblyName.GetAssemblyName(this.assemblyPath);
+			if(null == resolvedAssemblyName)
+				resolvedAssemblyName = assemblyName;
+		/// Checks if an assembly is already added. The method parses all references and compares the full assemblynames, or the location of the assemblies to decide whether two assemblies are the same.
+		/// <returns>true if the assembly has already been added.</returns>
+		protected internal override bool IsAlreadyAdded(out ReferenceNode existingReference)
+			ReferenceContainerNode referencesFolder = this.ProjectMgr.FindChild(ReferenceContainerNode.ReferencesNodeVirtualName) as ReferenceContainerNode;
+			Debug.Assert(referencesFolder != null,Could not find the References node);
+			bool shouldCheckPath = !string.IsNullOrEmpty(this.Url);
+			for(HierarchyNode n = referencesFolder.FirstChild; n != null; n = n.NextSibling)
+				AssemblyReferenceNode assemblyReferenceNode = n as AssemblyReferenceNode;
+				if(null != assemblyReferenceNode)
+					// We will check if the full assemblynames are the same or if the Url of the assemblies is the same.
+					if(String.Compare(assemblyReferenceNode.AssemblyName.FullName, this.assemblyName.FullName, StringComparison.OrdinalIgnoreCase) == 0 ||
+						(shouldCheckPath && NativeMethods.IsSamePath(assemblyReferenceNode.Url, this.Url)))
+					{
+						existingReference = assemblyReferenceNode;
+						return true;
+					}
+			existingReference = null;
+			return false;
+		/// Determines if this is node a valid node for painting the default reference icon.
+		protected override bool CanShowDefaultIcon()
+			if(String.IsNullOrEmpty(this.assemblyPath) || !File.Exists(this.assemblyPath))
+				return false;
+			return true;
+		private void GetPathNameFromProjectFile()
+			string result = this.ItemNode.GetMetadata(ProjectFileConstants.HintPath);
+			if(String.IsNullOrEmpty(result))
+				result = this.ItemNode.GetMetadata(ProjectFileConstants.AssemblyName);
+				if(String.IsNullOrEmpty(result))
+					this.assemblyPath = String.Empty;
+				else if(!result.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+					result += ".dll";
+					this.assemblyPath = result;
+				this.assemblyPath = this.GetFullPathFromPath(result);
+		private string GetFullPathFromPath(string path)
+			if(Path.IsPathRooted(path))
+				return path;
+				Uri uri = new Uri(this.ProjectMgr.BaseURI.Uri, path);
+				if(uri != null)
+					return Microsoft.VisualStudio.Shell.Url.Unescape(uri.LocalPath, true);
+			return String.Empty;
+		protected override void ResolveReference()
+		private void SetHintPathAndPrivateValue()
+			// Private means local copy; we want to know if it is already set to not override the default
+			string privateValue = this.ItemNode.GetMetadata(ProjectFileConstants.Private);
+			// Get the list of items which require HintPath
+            IEnumerable<MSBuild.ProjectItem> references = this.ProjectMgr.BuildProject.GetItems(MsBuildGeneratedItemType.ReferenceCopyLocalPaths);
+			// Remove the HintPath, we will re-add it below if it is needed
+			if(!String.IsNullOrEmpty(this.assemblyPath))
+				this.ItemNode.SetMetadata(ProjectFileConstants.HintPath, null);
+			// Now loop through the generated References to find the corresponding one
+            foreach (MSBuild.ProjectItem reference in references)
+				string fileName = Path.GetFileNameWithoutExtension(reference.EvaluatedInclude);
+				if(String.Compare(fileName, this.assemblyName.Name, StringComparison.OrdinalIgnoreCase) == 0)
+					// We found it, now set some properties based on this.
+					string hintPath = reference.GetMetadataValue(ProjectFileConstants.HintPath);
+					if(!String.IsNullOrEmpty(hintPath))
+						if(Path.IsPathRooted(hintPath))
+						{
+							hintPath = PackageUtilities.GetPathDistance(this.ProjectMgr.BaseURI.Uri, new Uri(hintPath));
+						}
+						this.ItemNode.SetMetadata(ProjectFileConstants.HintPath, hintPath);
+						// If this is not already set, we default to true
+						if(String.IsNullOrEmpty(privateValue))
+							this.ItemNode.SetMetadata(ProjectFileConstants.Private, true.ToString());
+					break;
+		/// This function ensures that some properties of the reference are set.
+		private void SetReferenceProperties()
+			// Set a default HintPath for msbuild to be able to resolve the reference.
+			this.ItemNode.SetMetadata(ProjectFileConstants.HintPath, this.assemblyPath);
+			// Resolve assembly referernces. This is needed to make sure that properties like the full path
+			// to the assembly or the hint path are set.
+			if(this.ProjectMgr.Build(MsBuildTarget.ResolveAssemblyReferences) != MSBuildResult.Successful)
+			// Check if we have to resolve again the path to the assembly.
+			if(string.IsNullOrEmpty(this.assemblyPath))
+				ResolveReference();
+			// Make sure that the hint path if set (if needed).
+			SetHintPathAndPrivateValue();
+		/// Does the actual job of resolving an assembly reference. We need a private method that does not violate 
+		/// calling virtual method from the constructor.
+        private void ResolveAssemblyReference()
+            if (this.ProjectMgr == null || this.ProjectMgr.IsClosed)
+            var group = this.ProjectMgr.CurrentConfig.GetItems(ProjectFileConstants.ReferencePath);
+            foreach (var item in group)
+                string fullPath = this.GetFullPathFromPath(item.EvaluatedInclude);
+                System.Reflection.AssemblyName name = System.Reflection.AssemblyName.GetAssemblyName(fullPath);
+                // Try with full assembly name and then with weak assembly name.
+                if (String.Equals(name.FullName, this.assemblyName.FullName, StringComparison.OrdinalIgnoreCase) || String.Equals(name.Name, this.assemblyName.Name, StringComparison.OrdinalIgnoreCase))
+                    if (!NativeMethods.IsSamePath(fullPath, this.assemblyPath))
+                        // set the full path now.
+                        this.assemblyPath = fullPath;
+                        // We have a new item to listen too, since the assembly reference is resolved from a different place.
+                        this.fileChangeListener.ObserveItem(this.assemblyPath);
+                    this.resolvedAssemblyName = name;
+                    // No hint path is needed since the assembly path will always be resolved.
+		/// Registers with File change events
+		private void InitializeFileChangeEvents()
+			this.fileChangeListener = new FileChangeManager(this.ProjectMgr.Site);
+			this.fileChangeListener.FileChangedOnDisk += this.OnAssemblyReferenceChangedOnDisk;
+		/// Unregisters this node from file change notifications.
+		private void UnregisterFromFileChangeService()
+			this.fileChangeListener.FileChangedOnDisk -= this.OnAssemblyReferenceChangedOnDisk;
+			this.fileChangeListener.Dispose();
+		/// Event callback. Called when one of the assembly file is changed.
+		/// <param name="sender">The FileChangeManager object.</param>
+		/// <param name="e">Event args containing the file name that was updated.</param>
+		private void OnAssemblyReferenceChangedOnDisk(object sender, FileChangedOnDiskEventArgs e)
+			Debug.Assert(e != null,No event args specified for the FileChangedOnDisk event);
+			// We only care about file deletes, so check for one before enumerating references.			
+			if((e.FileChangeFlag & _VSFILECHANGEFLAGS.VSFILECHG_Del) == 0)
+			if(NativeMethods.IsSamePath(e.FileName, this.assemblyPath))
+				this.OnInvalidateItems(this.Parent);
+﻿using System.Reflection;
+using System.Runtime.CompilerServices;
+// General Information about an assembly is controlled through the following 
+// set of attributes. Change these attribute values to modify the information
+// associated with an assembly.
+[assembly: AssemblyTitle("MapperTests")]
+[assembly: AssemblyDescription("")]
+[assembly: AssemblyConfiguration("")]
+[assembly: AssemblyCompany("Microsoft")]
+[assembly: AssemblyProduct("MapperTests")]
+[assembly: AssemblyCopyright("Copyright © Microsoft 2011")]
+[assembly: AssemblyTrademark("")]
+[assembly: AssemblyCulture("")]
+// Setting ComVisible to false makes the types in this assembly not visible 
+// to COM components.  If you need to access a type in this assembly from 
+// COM, set the ComVisible attribute to true on that type.
+[assembly: ComVisible(false)]
+// The following GUID is for the ID of the typelib if this project is exposed to COM
+[assembly: Guid("cb3a4908-b446-4d3e-a225-5d30e6136972")]
+// Version information for an assembly consists of the following four values:
+//      Major Version
+//      Minor Version 
+//      Build Number
+//      Revision
+// You can specify all the values or you can default the Build and Revision Numbers 
+// by using the '*' as shown below:
+// [assembly: AssemblyVersion("1.0.*")]
+[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyFileVersion("1.0.0.0")]
+using Microsoft.VisualStudio.TextManager.Interop;
+namespace Hill30.BooProject.LanguageService
+    /// Implements the QuickInfo/ CodeCompletion/Goto functionality
+    /// The methods in this class are responsible for locating appropriate mapped nodes
+    /// based on the given coordinates an delegating the response generation to the appropriate methods
+    /// of the located node(s).
+    // TODO: hide goto declaration menu item
+    // TODO: change the Declarations property to GetDeclarations method to support different parse reasons
+    // TODO: implement the GetMethods
+    // TODO: implement goto to a file from another project(in another language) 
+    public class BooAuthoringScope : AuthoringScope
+        private readonly BooSource source;
+        public BooAuthoringScope(BooSource source)
+            this.source = source;
+        public override string GetDataTipText(int line, int col, out TextSpan span)
+            return source.GetDataTipText(line, col, out span);
+        public override Declarations GetDeclarations(IVsTextView view, int line, int col, TokenInfo info, ParseReason reason)
+            return source.GetDeclarations(line, col, info, reason);
+        public override Methods GetMethods(int line, int col, string name)
+            return null;
+        public override string Goto(Microsoft.VisualStudio.VSConstants.VSStd97CmdID cmd, IVsTextView textView, int line, int col, out TextSpan span)
+            return source.Goto(line, col, out span);
+﻿using System;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using UserControl = System.Windows.Controls.UserControl;
+namespace Hill30.BooProject.BooISh
+    /// Interaction logic for MyControl.xaml
+    public partial class Control : UserControl
+        public Control()
+            InitializeComponent();
+        private BooIShWrapper booIShWrapper;
+        private void BooIShScreen_Loaded(object sender, RoutedEventArgs e)
+            TextBox textBox = BooIShScreen;
+            booIShWrapper =
+                new BooIShWrapper(
+                    s => textBox.Dispatcher.BeginInvoke(
+                        new Action(
+                            () =>
+                                {
+                                    textBox.AppendText(s);
+                                    caretIndex = textBox.Text.Length - 1;
+                                }
+                            )));
+        private int caretIndex;
+        private void BooIShScreen_KeyDown(object sender, KeyEventArgs e)
+            if (e.Key == Key.Return)
+                caretIndex = BooIShScreen.CaretIndex+1;
+                booIShWrapper.Input.WriteLine(BooIShScreen.Text.Substring(caretIndex));
+                BooIShScreen.AppendText("\n");
+            if (BooIShScreen.CaretIndex < caretIndex)
+                BooIShScreen.CaretIndex = BooIShScreen.Text.Length - 1;
+        private void BooIShScreen_Unloaded(object sender, RoutedEventArgs e)
+}﻿//
+using Hill30.Boo.ASTMapper;
+using Hill30.Boo.ASTMapper.AST;
+using Hill30.Boo.ASTMapper.AST.Nodes;
+using Hill30.BooProject.LanguageService;
+using Microsoft.VisualStudio.Text;
+using Microsoft.VisualStudio.Text.Classification;
+using Microsoft.VisualStudio.Text.Tagging;
+namespace Hill30.BooProject.Project
+    public class BooFileNode : FileNode, IFileNode
+        private CompileResults results;
+        private ITextBuffer textBuffer;
+        private ITextSnapshot originalSnapshot;
+        private bool hidden;
+        private readonly BooLanguageService languageService;
+        public CompileResults GetCompileResults()
+            return results;
+        public BooFileNode(ProjectNode root, ProjectElement e)
+			: base(root, e)
+            results = new CompileResults(() => Url, GetCompilerInput, ()=>GlobalServices.LanguageService.GetLanguagePreferences().TabSize);
+            languageService = (BooLanguageService)GetService(typeof(BooLanguageService));
+            hidden = true;
+        public void Bind(ITextBuffer buffer)
+            textBuffer = buffer;
+            if (buffer == null)
+                hidden = true;
+            else
+                originalSnapshot = buffer.CurrentSnapshot;
+        public string GetCompilerInput()
+            string source;
+            if (textBuffer == null)
+                source = File.ReadAllText(Url);
+                hidden = false;
+                originalSnapshot = textBuffer.CurrentSnapshot;
+                source = originalSnapshot.GetText();
+            return source;
+        public void SetCompilerResults(CompileResults newResults)
+            results.HideMessages(((BooProjectNode)ProjectMgr).RemoveTask);
+            results = newResults;
+            if (!hidden)
+                results.ShowMessages(((BooProjectNode)ProjectMgr).AddTask, Navigate);
+            if (Recompiled != null)
+                Recompiled(this, EventArgs.Empty);
+        private void Navigate(ErrorTask target)
+            ProjectMgr.Navigate(target.Document, target.Line, target.Column);
+        /// Return an imageindex
+        /// <value></value>
+        /// <returns></returns>
+        public override int ImageIndex
+                if (Path.GetExtension(FileName) == ".boo")
+                    return BooProjectNode.ImageOffset + (int)BooProjectNode.ProjectIcons.File;
+                return base.ImageIndex;
+        #region Private implementation
+   
+        internal OleServiceProvider.ServiceCreatorCallback ServiceCreator
+            get { return CreateServices; }
+        private object CreateServices(Type serviceType)
+            object service = null;
+            if (typeof(EnvDTE.ProjectItem) == serviceType)
+                service = GetAutomationObject();
+            return service;
+        
+        //public ICompileUnit CompileUnit { get { return GetResults().CompileUnit; } }
+        private SnapshotSpan SnapshotCreator(TextSpan textspan)
+                return default(SnapshotSpan);
+            var startIndex = originalSnapshot.GetLineFromLineNumber(textspan.iStartLine).Start + textspan.iStartIndex;
+            var endLine = originalSnapshot.GetLineFromLineNumber(textspan.iEndLine);
+            return 
+                textspan.iEndIndex == -1 
+                ? new SnapshotSpan(originalSnapshot, startIndex, endLine.Start + endLine.Length - startIndex) 
+                : new SnapshotSpan(originalSnapshot, startIndex, endLine.Start + textspan.iEndIndex - startIndex);
+        #region IFileNode Members
+        public event EventHandler Recompiled;
+        public MappedToken GetMappedToken(int line, int col) { return GetCompileResults().GetMappedToken(line, col); }
+        public MappedToken GetAdjacentMappedToken(int line, int col) { return GetCompileResults().GetAdjacentMappedToken(line, col); }
+        public IEnumerable<MappedTypeDefinition> Types { get { return GetCompileResults().Types; } }
+        public CompileResults.BufferPoint MapPosition(int line, int column) { return GetCompileResults().LocationToPoint(line, column); }
+        public IList<ClassificationSpan> GetClassificationSpans(SnapshotSpan span) 
+            return GetCompileResults().GetClassificationSpans(languageService.ClassificationTypeRegistry, span, SnapshotCreator); 
+        public IEnumerable<ITagSpan<ErrorTag>> GetTags(NormalizedSnapshotSpanCollection spans) { return GetCompileResults().GetTags(spans, SnapshotCreator); }
+        public void HideMessages() { GetCompileResults().HideMessages(((BooProjectNode)ProjectMgr).RemoveTask); }
+        public void ShowMessages() { GetCompileResults().ShowMessages(((BooProjectNode)ProjectMgr).AddTask, Navigate); }
+        public void SubmitForCompile() { ((BooProjectNode) ProjectMgr).SubmitForCompile(this); }
+    public class BooIShWrapper
+        private readonly Process booInterpreter;
+        private readonly Action<string> recorder;
+        public BooIShWrapper(Action<string> recorder)
+            this.recorder = recorder;
+            booInterpreter =
+                new Process
+                        StartInfo =
+                            {
+                                UseShellExecute = false,
+                                FileName =
+                                    GlobalServices.BinPath + @"\booish.exe",
+                                CreateNoWindow = true,
+                                RedirectStandardOutput = true,
+                                RedirectStandardError = true,
+                                RedirectStandardInput = true,
+                                WindowStyle = ProcessWindowStyle.Hidden
+                            }
+                    };
+            booInterpreter.OutputDataReceived += booInterpreter_OutputDataReceived;
+            booInterpreter.ErrorDataReceived += booInterpreter_OutputDataReceived;
+            booInterpreter.EnableRaisingEvents = true;
+            booInterpreter.Start();
+            booInterpreter.BeginOutputReadLine();
+            booInterpreter.BeginErrorReadLine();
+        private void booInterpreter_OutputDataReceived(object sender, DataReceivedEventArgs e)
+            recorder(e.Data + "\n");
+        public StreamWriter Input { get { return booInterpreter.StandardInput; } }
+using ErrorHandler = Microsoft.VisualStudio.ErrorHandler;
+namespace Microsoft.VisualStudio.Project.Automation
+	/// Helper class that handle the scope of an automation function.
+	/// It should be used inside a "using" directive to define the scope of the
+	/// automation function and make sure that the ExitAutomation method is called.
+	internal class AutomationScope : IDisposable
+		private IVsExtensibility3 extensibility;
+		private bool inAutomation;
+		private static volatile object Mutex;
+		/// Initializes the <see cref="AutomationScope"/> class.
+		[System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Performance",CA1810:InitializeReferenceTypeStaticFieldsInline)]
+		static AutomationScope()
+			Mutex = new object();
+		/// Defines the beginning of the scope of an automation function. This constuctor
+		/// calls EnterAutomationFunction to signal the Shell that the current function is
+		/// changing the status of the automation objects.
+		public AutomationScope(IServiceProvider provider)
+			if(null == provider)
+				throw new ArgumentNullException("provider");
+			extensibility = provider.GetService(typeof(EnvDTE.IVsExtensibility)) as IVsExtensibility3;
+			if(null == extensibility)
+				throw new InvalidOperationException();
+			ErrorHandler.ThrowOnFailure(extensibility.EnterAutomationFunction());
+			inAutomation = true;
+		/// Ends the scope of the automation function. This function is also called by the
+		/// Dispose method.
+		public void ExitAutomation()
+			if(inAutomation)
+				ErrorHandler.ThrowOnFailure(extensibility.ExitAutomationFunction());
+				inAutomation = false;
+		/// Gets the IVsExtensibility3 interface used in the automation function.
+		public IVsExtensibility3 Extensibility
+			get { return extensibility; }
+		/// Performs application-defined tasks associated with freeing, releasing, or resetting unmanaged resources.
+		public void Dispose()
+			this.Dispose(true);
+			GC.SuppressFinalize(this);
+		#region IDisposable Members
+		private void Dispose(bool disposing)
+			if(!this.isDisposed)
+				lock(Mutex)
+					if(disposing)
+						ExitAutomation();
+					this.isDisposed = true;

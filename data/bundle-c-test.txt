@@ -1,0 +1,1502 @@
+#include <html_document.h>
+
+/*
+ * call-seq:
+ *  new
+ *
+ * Create a new document
+ */
+static VALUE new(int argc, VALUE *argv, VALUE klass)
+{
+  VALUE uri, external_id, rest, rb_doc;
+
+  rb_scan_args(argc, argv, "0*", &rest);
+  uri         = rb_ary_entry(rest, 0);
+  external_id = rb_ary_entry(rest, 1);
+
+  htmlDocPtr doc = htmlNewDoc(
+      RTEST(uri) ? (const xmlChar *)StringValuePtr(uri) : NULL,
+      RTEST(external_id) ? (const xmlChar *)StringValuePtr(external_id) : NULL
+  );
+  rb_doc = Nokogiri_wrap_xml_document(klass, doc);
+  rb_funcall2(rb_doc, rb_intern("initialize"), argc, argv);
+  return rb_doc ;
+}
+
+/*
+ * call-seq:
+ *  read_io(io, url, encoding, options)
+ *
+ * Read the HTML document from +io+ with given +url+, +encoding+,
+ * and +options+.  See Nokogiri::HTML.parse
+ */
+static VALUE read_io( VALUE klass,
+                      VALUE io,
+                      VALUE url,
+                      VALUE encoding,
+                      VALUE options )
+{
+  const char * c_url    = (url == Qnil) ? NULL : StringValuePtr(url);
+  const char * c_enc    = (encoding == Qnil) ? NULL : StringValuePtr(encoding);
+  VALUE error_list      = rb_ary_new();
+
+  xmlInitParser();
+  xmlResetLastError();
+  xmlSetStructuredErrorFunc((void *)error_list, Nokogiri_error_array_pusher);
+
+  htmlDocPtr doc = htmlReadIO(
+      io_read_callback,
+      io_close_callback,
+      (void *)io,
+      c_url,
+      c_enc,
+      NUM2INT(options)
+  );
+  xmlSetStructuredErrorFunc(NULL, NULL);
+
+  if(doc == NULL) {
+    xmlFreeDoc(doc);
+
+    xmlErrorPtr error = xmlGetLastError();
+    if(error)
+      rb_funcall(rb_mKernel, rb_intern("raise"), 1,
+          Nokogiri_wrap_xml_syntax_error((VALUE)NULL, error)
+      );
+    else
+      rb_raise(rb_eRuntimeError, "Could not parse document");
+
+    return Qnil;
+  }
+
+  VALUE document = Nokogiri_wrap_xml_document(klass, doc);
+  rb_funcall(document, rb_intern("errors="), 1, error_list);
+  return document;
+}
+
+/*
+ * call-seq:
+ *  read_memory(string, url, encoding, options)
+ *
+ * Read the HTML document contained in +string+ with given +url+, +encoding+,
+ * and +options+.  See Nokogiri::HTML.parse
+ */
+static VALUE read_memory( VALUE klass,
+                          VALUE string,
+                          VALUE url,
+                          VALUE encoding,
+                          VALUE options )
+{
+  const char * c_buffer = StringValuePtr(string);
+  const char * c_url    = (url == Qnil) ? NULL : StringValuePtr(url);
+  const char * c_enc    = (encoding == Qnil) ? NULL : StringValuePtr(encoding);
+  int len               = RSTRING_LEN(string);
+  VALUE error_list      = rb_ary_new();
+
+  xmlInitParser();
+  xmlResetLastError();
+  xmlSetStructuredErrorFunc((void *)error_list, Nokogiri_error_array_pusher);
+
+  htmlDocPtr doc = htmlReadMemory(c_buffer, len, c_url, c_enc, NUM2INT(options));
+  xmlSetStructuredErrorFunc(NULL, NULL);
+
+  if(doc == NULL) {
+    xmlFreeDoc(doc);
+
+    xmlErrorPtr error = xmlGetLastError();
+    if(error)
+      rb_funcall(rb_mKernel, rb_intern("raise"), 1,
+          Nokogiri_wrap_xml_syntax_error((VALUE)NULL, error)
+      );
+    else
+      rb_raise(rb_eRuntimeError, "Could not parse document");
+
+    return Qnil;
+  }
+
+  VALUE document = Nokogiri_wrap_xml_document(klass, doc);
+  rb_funcall(document, rb_intern("errors="), 1, error_list);
+  return document;
+}
+
+/*
+ * call-seq:
+ *  type
+ *
+ * The type for this document
+ */
+static VALUE type(VALUE self)
+{
+  htmlDocPtr doc;
+  Data_Get_Struct(self, xmlDoc, doc);
+  return INT2NUM((int)doc->type);
+}
+
+/*
+ * call-seq:
+ *  meta_encoding=
+ *
+ * Set the meta tag encoding for this document.
+ */
+static VALUE set_meta_encoding(VALUE self, VALUE encoding)
+{
+  htmlDocPtr doc;
+  Data_Get_Struct(self, xmlDoc, doc);
+
+  htmlSetMetaEncoding(doc, (const xmlChar *)StringValuePtr(encoding));
+
+  return encoding;
+}
+
+/*
+ * call-seq:
+ *  meta_encoding
+ *
+ * Get the meta tag encoding for this document.
+ */
+static VALUE meta_encoding(VALUE self)
+{
+  htmlDocPtr doc;
+  Data_Get_Struct(self, xmlDoc, doc);
+
+  return NOKOGIRI_STR_NEW2(htmlGetMetaEncoding(doc), doc->encoding);
+}
+
+VALUE cNokogiriHtmlDocument ;
+void init_html_document()
+{
+  VALUE nokogiri  = rb_define_module("Nokogiri");
+  VALUE html      = rb_define_module_under(nokogiri, "HTML");
+  VALUE xml       = rb_define_module_under(nokogiri, "XML");
+  VALUE node      = rb_define_class_under(xml, "Node", rb_cObject);
+  VALUE xml_doc   = rb_define_class_under(xml, "Document", node);
+  VALUE klass     = rb_define_class_under(html, "Document", xml_doc);
+
+  cNokogiriHtmlDocument = klass;
+
+  rb_define_singleton_method(klass, "read_memory", read_memory, 4);
+  rb_define_singleton_method(klass, "read_io", read_io, 4);
+  rb_define_singleton_method(klass, "new", new, -1);
+
+  rb_define_method(klass, "type", type, 0);
+  rb_define_method(klass, "meta_encoding", meta_encoding, 0);
+  rb_define_method(klass, "meta_encoding=", set_meta_encoding, 1);
+}
+
+#include <html_entity_lookup.h>
+
+/*
+ * call-seq:
+ *  get(key)
+ *
+ * Get the HTML::EntityDescription for +key+
+ */
+static VALUE get(VALUE self, VALUE key)
+{
+  const htmlEntityDesc * desc =
+    htmlEntityLookup((const xmlChar *)StringValuePtr(key));
+
+  if(NULL == desc) return Qnil;
+  VALUE klass = rb_const_get(mNokogiriHtml, rb_intern("EntityDescription"));
+
+  return rb_funcall(klass, rb_intern("new"), 3,
+      INT2NUM((int)desc->value),
+      NOKOGIRI_STR_NEW2(desc->name, "UTF-8"),
+      NOKOGIRI_STR_NEW2(desc->desc, "UTF-8"));
+}
+
+void init_html_entity_lookup()
+{
+  VALUE nokogiri = rb_define_module("Nokogiri");
+  VALUE html = rb_define_module_under(nokogiri, "HTML");
+  VALUE klass = rb_define_class_under(html, "EntityLookup", rb_cObject);
+
+  rb_define_method(klass, "get", get, 1);
+}
+
+#include <xml_attr.h>
+
+/*
+ * call-seq:
+ *  value=(content)
+ *
+ * Set the value for this Attr to +content+
+ */
+static VALUE set_value(VALUE self, VALUE content)
+{
+  xmlAttrPtr attr;
+  Data_Get_Struct(self, xmlAttr, attr);
+
+  if(attr->children) xmlFreeNodeList(attr->children);
+
+  attr->children = attr->last = NULL;
+
+  if(content) {
+    xmlChar *buffer;
+    xmlNode *tmp;
+
+    // Encode our content
+    buffer = xmlEncodeEntitiesReentrant(attr->doc, (unsigned char *)StringValuePtr(content));
+
+    attr->children = xmlStringGetNodeList(attr->doc, buffer);
+    attr->last = NULL;
+    tmp = attr->children;
+
+    // Loop through the children
+    for(tmp = attr->children; tmp; tmp = tmp->next) {
+      tmp->parent = (xmlNode *)attr;
+      tmp->doc = attr->doc;
+      if(tmp->next == NULL) attr->last = tmp;
+    }
+
+    // Free up memory
+    xmlFree(buffer);
+  }
+
+  return content;
+}
+
+/*
+ * call-seq:
+ *  new(document, name)
+ *
+ * Create a new Attr element on the +document+ with +name+
+ */
+static VALUE new(int argc, VALUE *argv, VALUE klass)
+{
+  xmlDocPtr xml_doc;
+  VALUE document;
+  VALUE name;
+  VALUE rest;
+
+  rb_scan_args(argc, argv, "2*", &document, &name, &rest);
+
+  Data_Get_Struct(document, xmlDoc, xml_doc);
+
+  xmlAttrPtr node = xmlNewDocProp(
+      xml_doc,
+      (const xmlChar *)StringValuePtr(name),
+      NULL
+  );
+
+  NOKOGIRI_ROOT_NODE((xmlNodePtr)node);
+
+  VALUE rb_node = Nokogiri_wrap_xml_node(klass, (xmlNodePtr)node);
+  rb_funcall2(rb_node, rb_intern("initialize"), argc, argv);
+
+  if(rb_block_given_p()) rb_yield(rb_node);
+
+  return rb_node;
+}
+
+VALUE cNokogiriXmlAttr;
+void init_xml_attr()
+{
+  VALUE nokogiri = rb_define_module("Nokogiri");
+  VALUE xml = rb_define_module_under(nokogiri, "XML");
+  VALUE node = rb_define_class_under(xml, "Node", rb_cObject);
+
+  /*
+   * Attr represents a Attr node in an xml document.
+   */
+  VALUE klass = rb_define_class_under(xml, "Attr", node);
+
+  cNokogiriXmlAttr = klass;
+
+  rb_define_singleton_method(klass, "new", new, -1);
+  rb_define_method(klass, "value=", set_value, 1);
+}
+
+#include <html_sax_parser.h>
+
+/*
+ * call-seq:
+ *  native_parse_file(data, encoding)
+ *
+ * Parse +data+ with +encoding+
+ */
+static VALUE native_parse_file(VALUE self, VALUE data, VALUE encoding)
+{
+  xmlSAXHandlerPtr handler;
+  htmlDocPtr hdoc ;
+  Data_Get_Struct(self, xmlSAXHandler, handler);
+  hdoc = htmlSAXParseFile( StringValuePtr(data),
+                           (const char *)StringValuePtr(encoding),
+                           (htmlSAXHandlerPtr)handler,
+                           (void *)self );
+  xmlFreeDoc(hdoc);
+  return data;
+}
+
+/*
+ * call-seq:
+ *  native_parse_memory(data, encoding)
+ *
+ * Parse +data+ with +encoding+
+ */
+static VALUE native_parse_memory(VALUE self, VALUE data, VALUE encoding)
+{
+  xmlSAXHandlerPtr handler;
+  htmlDocPtr hdoc ;
+  Data_Get_Struct(self, xmlSAXHandler, handler);
+  hdoc = htmlSAXParseDoc(  (xmlChar *)StringValuePtr(data),
+                           (const char *)StringValuePtr(encoding),
+                           (htmlSAXHandlerPtr)handler,
+                           (void *)self );
+  xmlFreeDoc(hdoc);
+  return data;
+}
+
+VALUE cNokogiriHtmlSaxParser ;
+void init_html_sax_parser()
+{
+  VALUE nokogiri  = rb_define_module("Nokogiri");
+  VALUE html      = rb_define_module_under(nokogiri, "HTML");
+  VALUE sax       = rb_define_module_under(html, "SAX");
+  /*
+   * Nokogiri::HTML::SAX::Parser is used for parsing HTML with SAX
+   * callbacks.
+   */
+  VALUE klass     = rb_define_class_under(sax, "Parser", cNokogiriXmlSaxParser);
+
+  cNokogiriHtmlSaxParser = klass;
+
+  rb_define_private_method(klass, "native_parse_memory", native_parse_memory, 2);
+  rb_define_private_method(klass, "native_parse_file", native_parse_file, 2);
+}
+
+#include <nokogiri.h>
+
+VALUE mNokogiri ;
+VALUE mNokogiriXml ;
+VALUE mNokogiriHtml ;
+VALUE mNokogiriXslt ;
+VALUE mNokogiriXmlSax ;
+VALUE mNokogiriHtmlSax ;
+
+#ifdef USE_INCLUDED_VASPRINTF
+/*
+ * I srsly hate windows.  it doesn't have vasprintf.
+ * Thank you Geoffroy Couprie for this implementation of vasprintf!
+ */
+int vasprintf (char **strp, const char *fmt, va_list ap)
+{
+  int len = vsnprintf (NULL, 0, fmt, ap) + 1;
+  char *res = (char *)malloc((unsigned int)len);
+  if (res == NULL)
+      return -1;
+  *strp = res;
+  return vsnprintf(res, (unsigned int)len, fmt, ap);
+}
+#endif
+
+int is_2_6_16(void)
+{
+  return (strcmp(xmlParserVersion, "20616") <= 0) ? 1 : 0 ;
+}
+
+void Init_nokogiri()
+{
+  xmlMemSetup(
+      (xmlFreeFunc)ruby_xfree,
+      (xmlMallocFunc)ruby_xmalloc,
+      (xmlReallocFunc)ruby_xrealloc,
+      strdup
+  );
+
+  mNokogiri         = rb_define_module("Nokogiri");
+  mNokogiriXml      = rb_define_module_under(mNokogiri, "XML");
+  mNokogiriHtml     = rb_define_module_under(mNokogiri, "HTML");
+  mNokogiriXslt     = rb_define_module_under(mNokogiri, "XSLT");
+  mNokogiriXmlSax   = rb_define_module_under(mNokogiriXml, "SAX");
+  mNokogiriHtmlSax  = rb_define_module_under(mNokogiriHtml, "SAX");
+
+  rb_const_set( mNokogiri,
+                rb_intern("LIBXML_VERSION"),
+                NOKOGIRI_STR_NEW2(LIBXML_DOTTED_VERSION, "UTF-8")
+              );
+  rb_const_set( mNokogiri,
+                rb_intern("LIBXML_PARSER_VERSION"),
+                NOKOGIRI_STR_NEW2(xmlParserVersion, "UTF-8")
+              );
+
+  init_xml_document();
+  init_html_document();
+  init_xml_node();
+  init_xml_document_fragment();
+  init_xml_text();
+  init_xml_cdata();
+  init_xml_processing_instruction();
+  init_xml_attr();
+  init_xml_entity_reference();
+  init_xml_comment();
+  init_xml_node_set();
+  init_xml_xpath_context();
+  init_xml_xpath();
+  init_xml_sax_parser();
+  init_xml_sax_push_parser();
+  init_xml_reader();
+  init_xml_dtd();
+  init_xml_namespace();
+  init_html_sax_parser();
+  init_xslt_stylesheet();
+  init_xml_syntax_error();
+  init_html_entity_lookup();
+  init_html_element_description();
+  init_xml_schema();
+  init_xml_relax_ng();
+}
+
+#include <html_element_description.h>
+
+/*
+ * call-seq:
+ *  required_attributes
+ *
+ * A list of required attributes for this element
+ */
+static VALUE required_attributes(VALUE self)
+{
+  htmlElemDesc * description;
+  Data_Get_Struct(self, htmlElemDesc, description);
+
+  VALUE list = rb_ary_new();
+
+  if(NULL == description->attrs_req) return list;
+
+  int i = 0;
+  while(description->attrs_req[i]) {
+    rb_ary_push(list, NOKOGIRI_STR_NEW2(description->attrs_req[i], "UTF-8"));
+    i++;
+  }
+
+  return list;
+}
+
+/*
+ * call-seq:
+ *  deprecated_attributes
+ *
+ * A list of deprecated attributes for this element
+ */
+static VALUE deprecated_attributes(VALUE self)
+{
+  htmlElemDesc * description;
+  Data_Get_Struct(self, htmlElemDesc, description);
+
+  VALUE list = rb_ary_new();
+
+  if(NULL == description->attrs_depr) return list;
+
+  int i = 0;
+  while(description->attrs_depr[i]) {
+    rb_ary_push(list, NOKOGIRI_STR_NEW2(description->attrs_depr[i], "UTF-8"));
+    i++;
+  }
+
+  return list;
+}
+
+/*
+ * call-seq:
+ *  optional_attributes
+ *
+ * A list of optional attributes for this element
+ */
+static VALUE optional_attributes(VALUE self)
+{
+  htmlElemDesc * description;
+  Data_Get_Struct(self, htmlElemDesc, description);
+
+  VALUE list = rb_ary_new();
+
+  if(NULL == description->attrs_opt) return list;
+
+  int i = 0;
+  while(description->attrs_opt[i]) {
+    rb_ary_push(list, NOKOGIRI_STR_NEW2(description->attrs_opt[i], "UTF-8"));
+    i++;
+  }
+
+  return list;
+}
+
+/*
+ * call-seq:
+ *  default_sub_element
+ *
+ * The default sub element for this element
+ */
+static VALUE default_sub_element(VALUE self)
+{
+  htmlElemDesc * description;
+  Data_Get_Struct(self, htmlElemDesc, description);
+
+  return NOKOGIRI_STR_NEW2(description->defaultsubelt, "UTF-8");
+}
+
+/*
+ * call-seq:
+ *  sub_elements
+ *
+ * A list of allowed sub elements for this element.
+ */
+static VALUE sub_elements(VALUE self)
+{
+  htmlElemDesc * description;
+  Data_Get_Struct(self, htmlElemDesc, description);
+
+  VALUE list = rb_ary_new();
+
+  if(NULL == description->subelts) return list;
+
+  int i = 0;
+  while(description->subelts[i]) {
+    rb_ary_push(list, NOKOGIRI_STR_NEW2(description->subelts[i], "UTF-8"));
+    i++;
+  }
+
+  return list;
+}
+
+/*
+ * call-seq:
+ *  description
+ *
+ * The description for this element
+ */
+static VALUE description(VALUE self)
+{
+  htmlElemDesc * description;
+  Data_Get_Struct(self, htmlElemDesc, description);
+
+  return NOKOGIRI_STR_NEW2(description->desc, "UTF-8");
+}
+
+/*
+ * call-seq:
+ *  inline?
+ *
+ * Is this element an inline element?
+ */
+static VALUE inline_eh(VALUE self)
+{
+  htmlElemDesc * description;
+  Data_Get_Struct(self, htmlElemDesc, description);
+
+  if(description->isinline) return Qtrue;
+  return Qfalse;
+}
+
+/*
+ * call-seq:
+ *  deprecated?
+ *
+ * Is this element deprecated?
+ */
+static VALUE deprecated_eh(VALUE self)
+{
+  htmlElemDesc * description;
+  Data_Get_Struct(self, htmlElemDesc, description);
+
+  if(description->depr) return Qtrue;
+  return Qfalse;
+}
+
+/*
+ * call-seq:
+ *  empty?
+ *
+ * Is this an empty element?
+ */
+static VALUE empty_eh(VALUE self)
+{
+  htmlElemDesc * description;
+  Data_Get_Struct(self, htmlElemDesc, description);
+
+  if(description->empty) return Qtrue;
+  return Qfalse;
+}
+
+/*
+ * call-seq:
+ *  save_end_tag?
+ *
+ * Should the end tag be saved?
+ */
+static VALUE save_end_tag_eh(VALUE self)
+{
+  htmlElemDesc * description;
+  Data_Get_Struct(self, htmlElemDesc, description);
+
+  if(description->saveEndTag) return Qtrue;
+  return Qfalse;
+}
+
+/*
+ * call-seq:
+ *  implied_end_tag?
+ *
+ * Can the end tag be implied for this tag?
+ */
+static VALUE implied_end_tag_eh(VALUE self)
+{
+  htmlElemDesc * description;
+  Data_Get_Struct(self, htmlElemDesc, description);
+
+  if(description->endTag) return Qtrue;
+  return Qfalse;
+}
+
+/*
+ * call-seq:
+ *  implied_start_tag?
+ *
+ * Can the start tag be implied for this tag?
+ */
+static VALUE implied_start_tag_eh(VALUE self)
+{
+  htmlElemDesc * description;
+  Data_Get_Struct(self, htmlElemDesc, description);
+
+  if(description->startTag) return Qtrue;
+  return Qfalse;
+}
+
+/*
+ * call-seq:
+ *  name
+ *
+ * Get the tag name for this ElemementDescription
+ */
+static VALUE name(VALUE self)
+{
+  htmlElemDesc * description;
+  Data_Get_Struct(self, htmlElemDesc, description);
+
+  if(NULL == description->name) return Qnil;
+  return NOKOGIRI_STR_NEW2(description->name, "UTF-8");
+}
+
+/*
+ * call-seq:
+ *  [](tag_name)
+ *
+ * Get ElemementDescription for +tag_name+
+ */
+static VALUE get_description(VALUE klass, VALUE tag_name)
+{
+  const htmlElemDesc * description = htmlTagLookup(
+      (const xmlChar *)StringValuePtr(tag_name)
+  );
+
+  if(NULL == description) return Qnil;
+  return Data_Wrap_Struct(klass, 0, 0, description);
+}
+
+VALUE cNokogiriHtmlElementDescription ;
+void init_html_element_description()
+{
+  VALUE nokogiri = rb_define_module("Nokogiri");
+  VALUE html     = rb_define_module_under(nokogiri, "HTML");
+  VALUE klass    = rb_define_class_under(html, "ElementDescription",rb_cObject);
+
+  cNokogiriHtmlElementDescription = klass;
+
+  rb_define_singleton_method(klass, "[]", get_description, 1);
+
+  rb_define_method(klass, "name", name, 0);
+  rb_define_method(klass, "implied_start_tag?", implied_start_tag_eh, 0);
+  rb_define_method(klass, "implied_end_tag?", implied_end_tag_eh, 0);
+  rb_define_method(klass, "save_end_tag?", save_end_tag_eh, 0);
+  rb_define_method(klass, "empty?", empty_eh, 0);
+  rb_define_method(klass, "deprecated?", deprecated_eh, 0);
+  rb_define_method(klass, "inline?", inline_eh, 0);
+  rb_define_method(klass, "description", description, 0);
+  rb_define_method(klass, "sub_elements", sub_elements, 0);
+  rb_define_method(klass, "default_sub_element", default_sub_element, 0);
+  rb_define_method(klass, "optional_attributes", optional_attributes, 0);
+  rb_define_method(klass, "deprecated_attributes", deprecated_attributes, 0);
+  rb_define_method(klass, "required_attributes", required_attributes, 0);
+}
+
+
+/*
+ * Enable C99 extensions to enable fast float rounding stuff in math.h.
+ */
+#define	_ISOC9X_SOURCE	1
+#define _ISOC99_SOURCE	1
+
+#include <math.h>
+#include <ruby.h>
+#include <time.h>
+
+#define FLOOR(a) lrintf(floorf(a))
+#define FLOAT(a) (float)a
+
+static VALUE rb_cDate;      /* class Date */
+static VALUE rb_cRational;  /* class Rational */
+
+static ID id_subtract;      /* :- */
+static ID id_add;           /* :+ */
+static ID id_divmod;        /* :divmod */
+static ID id_new;           /* :new */
+static ID id_new_bang;      /* :new! */
+static ID id_ivar_civil;    /* :@__civil__ */
+static ID id_jd;            /* :jd */
+static ID id_ivar_ajd;      /* :@ajd */
+static ID id_jd_to_civil;   /* :jd_to_civil */
+static ID id_ivar_sg;       /* :@sg */
+static ID id_numerator;     /* :numerator */
+static ID id_denominator;   /* :denominator */
+
+static ID id_strptime_without_performance;
+static ID id_strftime_without_performance;
+
+static VALUE JULIAN;        /* Date::JULIAN */
+static VALUE GREGORIAN;     /* Date::GREGORIAN */
+static VALUE ITALY;         /* Date::ITALY */
+
+static VALUE ra_one_half;    /* Rational(1, 2) */
+static VALUE DEFAULT_FORMAT; /* "%F" */
+
+static int initialized = 0;
+
+static inline int 
+civil_to_jd(int y, int m, int d, VALUE sg)
+{
+  int a, b, jd;
+  if ( m <= 2 ) {
+    y-= 1;
+    m+= 12;
+  }
+  a = y / 100;
+  b = 2 - a + (a / 4);
+  jd = FLOOR(365.25 * (y + 4716)) +
+    FLOOR(30.6001 * (m + 1)) +
+    d + b - 1524;
+  if ( sg == JULIAN || (sg != GREGORIAN && jd < FIX2INT(sg)) )
+    jd -= b;
+  return jd;
+}
+
+
+/*
+ * Date::civil_to_jd(year, month, day, sg=Date::GREGORIAN)
+ */
+static VALUE 
+rb_date_civil_to_jd(int argc, VALUE* argv, VALUE self)
+{
+  int y  = FIX2INT(argv[0]), 
+      m  = FIX2INT(argv[1]), 
+      d  = FIX2INT(argv[2]);
+  VALUE sg = (argc == 4 ? argv[3] : GREGORIAN);
+  return INT2FIX(civil_to_jd(y, m, d, sg));
+}
+
+
+struct mini_tm {
+  int y;
+  int m;
+  int d;
+};
+
+
+static inline void
+jd_to_civil(int jd, VALUE sg, struct mini_tm * t)
+{
+  int a, b, c, d, e;
+  if ( sg == JULIAN || (sg != GREGORIAN && jd < FIX2INT(sg)) ) { /* julian? */
+    a = jd;
+  }else{
+    int x = FLOOR((jd - 1867216.25) / 36524.25);
+    a = jd + 1 + x - FLOOR(x / 4.0);
+  }
+  b = a + 1524;
+  c = FLOOR((b - 122.1) / 365.25);
+  d = FLOOR(365.25 * c);
+  e = FLOOR((b - d) / 30.6001);
+  t->d = b - d - FLOOR(30.6001 * e);
+  if ( e <= 13 ) {
+    t->m = e - 1;
+    t->y = c - 4716;
+  }else{
+    t->m = e - 13;
+    t->y = c - 4715;
+  }
+}
+
+
+/*
+ * Date::jd_to_civil(jd, sg=GREGORIAN)
+ */
+static VALUE 
+rb_date_jd_to_civil(int argc, VALUE * argv, VALUE self)
+{
+  int    jd = FIX2INT(argv[0]);
+  VALUE  sg = (argc == 2 ? argv[1] : GREGORIAN);
+  struct mini_tm t;
+  jd_to_civil(jd, sg, &t);
+  return rb_ary_new3(3, INT2FIX(t.y), INT2FIX(t.m), INT2FIX(t.d));
+}
+
+
+/*
+ * Calculate the AJD from a julian date, fractional day, and offset.
+ */
+static inline VALUE
+jd_to_ajd(long jd, VALUE fr, VALUE of)
+{
+  /* Ruby Implementation: jd + fr - of - 1.to_r/2 */
+  if ( TYPE(fr) == T_FIXNUM && TYPE(of) == T_FIXNUM ) {
+    /* fast path the common case of no fraction and no offset */
+    long numerator = (((jd + FIX2LONG(fr) - FIX2LONG(of)) - 1) * 2) + 1;
+    return rb_funcall(rb_cRational, id_new, 2, LONG2FIX(numerator), LONG2FIX(2));
+  }else{
+    /* use slower rational math */
+    VALUE result = rb_funcall(rb_cRational, id_new, 2, LONG2FIX(jd), LONG2FIX(1));
+    result = rb_funcall(result, id_add, 1, fr);
+    if ( of != LONG2FIX(0) ) 
+      result = rb_funcall(result, id_subtract, 1, of);
+    result = rb_funcall(result, id_subtract, 1, ra_one_half);
+    return result;
+  }
+}
+
+
+/*
+ * Date::jd_to_ajd(jd, fr, of=0)
+ */
+static VALUE
+rb_date_jd_to_ajd(int argc, VALUE * argv, VALUE self)
+{
+  long jd = FIX2LONG(argv[0]);
+  VALUE fr = (argc > 1 ? argv[1] : LONG2FIX(0));
+  VALUE of = (argc > 2 ? argv[2] : LONG2FIX(0));
+  return jd_to_ajd(jd, fr, of);
+}
+
+
+/*
+ * Date::ajd_to_jd(ajd, of=0)
+ *
+ * TODO: handle offsets properly.
+ *
+ * Ruby Implementation: (ajd + of + 1.to_r/2).divmod(1)
+ */
+static VALUE
+rb_date_ajd_to_jd(int argc, VALUE * argv, VALUE self)
+{
+  VALUE ajd = argv[0];
+  VALUE of  = (argc == 2 ? argv[1] : INT2FIX(0));
+  long den = FIX2LONG(rb_funcall(ajd, id_denominator, 0));
+  long num = FIX2LONG(rb_funcall(ajd, id_numerator, 0));
+  if ( den == 2 && of == INT2FIX(0) ) {
+    /* fast path */
+    return rb_ary_new3(2, LONG2FIX((num + 1) / 2), ra_one_half);
+  }else{
+    VALUE result = rb_funcall(ajd, id_add, 1, of);
+    result = rb_funcall(result, id_add, 1, ra_one_half);
+    return rb_funcall(result, id_divmod, 1, LONG2FIX(1));
+  }
+}
+
+
+/*
+ * Date::new(y=-4712, m=1, d=1, sg=ITALY)
+ */
+static VALUE 
+rb_date_new(int argc, VALUE * argv, VALUE self) {
+  int y    = (argc > 0 ? NUM2INT(argv[0]) : -4712),
+      m    = (argc > 1 ? NUM2INT(argv[1]) : 1),
+      d    = (argc > 2 ? NUM2INT(argv[2]) : 1);
+  VALUE sg = (argc > 3 ? argv[3] : ITALY);
+  int jd = -1;
+  struct mini_tm t;
+  if (d < 0) {
+    int ny = (y * 12 + m) / 12;
+    int nm = (y * 12 + m) % 12;
+    nm = (nm + 1) / 1;
+    jd = civil_to_jd(ny, nm, d+1, sg);
+
+    VALUE ns = jd < 2299161 ? JULIAN : GREGORIAN;
+    jd_to_civil(jd-d, ns, &t);
+    if ( t.y != ny || t.m != nm || t.d != 1 ) {
+      rb_raise(rb_eArgError, "Invalid date: (%d, %d, %d)", y, m, d);
+      return Qnil;
+    }
+    jd_to_civil(jd, sg, &t);
+    if ( t.y != y || t.m != m ) {
+      rb_raise(rb_eArgError, "Invalid date: (%d, %d, %d)", y, m, d);
+      return Qnil;
+    }
+  } else {
+    jd = civil_to_jd(y, m, d, sg);
+    jd_to_civil(jd, sg, &t);
+    if ( t.y != y || t.m != m || t.d != d ) {
+      rb_raise(rb_eArgError, "Invalid date: (%d, %d, %d)", y, m, d);
+      return Qnil;
+    }
+  }
+  VALUE ajd = jd_to_ajd(jd, INT2FIX(0), INT2FIX(0));
+  VALUE date = rb_funcall(self, id_new_bang, 3, ajd, INT2FIX(0), sg);
+  rb_ivar_set(date, id_ivar_civil, rb_ary_new3(3, INT2FIX(t.y), INT2FIX(t.m), INT2FIX(t.d)));
+  return date;
+}
+
+
+/*
+ * Date#civil
+ *
+ * Fast path the case where the date is created with civil parameters.
+ */
+static VALUE
+rb_date_civil(VALUE self) {
+  if ( rb_ivar_defined(self, id_ivar_civil) == Qfalse ) {
+    VALUE jd = rb_funcall(self, id_jd, 0);
+    VALUE sg = rb_ivar_get(self, id_ivar_sg);
+    VALUE result = rb_funcall(rb_cDate, id_jd_to_civil, 2, jd, sg);
+    return rb_ivar_set(self, id_ivar_civil, result);
+  }else{
+    return rb_ivar_get(self, id_ivar_civil);
+  }
+}
+
+
+/*
+ * Date#sys_strftime(fmt="%F")
+ */
+static VALUE
+rb_date_strftime(int argc, VALUE * argv, VALUE self)
+{
+  VALUE format = (argc > 0 ? *argv : DEFAULT_FORMAT);
+  VALUE civil = rb_date_civil(self);
+
+  char  * pf = RSTRING(format)->ptr;
+  VALUE * pc = RARRAY(civil)->ptr;
+  int ic[3];
+
+  ic[0] = FIX2INT(pc[0]);
+  ic[1] = FIX2INT(pc[1]);
+  ic[2] = FIX2INT(pc[2]);
+
+  /* fast path default format: %F or %Y-%m-%d */
+  if ( (pf[0] == '%' && pf[1] == 'F' && pf[2] == 0) ||
+       (pf[0] == '%' && pf[1] == 'Y' && pf[2] == '-' 
+     && pf[3] == '%' && pf[4] == 'm' && pf[5] == '-'
+     && pf[6] == '%' && pf[7] == 'd' && pf[8] == 0) )
+  {
+    VALUE buf = rb_str_buf_new(11);
+    char  * pb = RSTRING(buf)->ptr;
+    RSTRING(buf)->len = 
+      sprintf(pb, "%04d-%02d-%02d", ic[0], ic[1], ic[2]);
+    return buf;
+  }
+ 
+  /* Use libc's strftime but only for Date class */
+  if ( RBASIC(self)->klass == rb_cDate ){
+    VALUE buf = rb_str_buf_new(128);
+    char  * pb = RSTRING(buf)->ptr;
+    struct tm t;
+    bzero(&t, sizeof(struct tm));
+    t.tm_year = ic[0] - 1900;
+    t.tm_mon  = ic[1] - 1;
+    t.tm_mday = ic[2];
+    mktime(&t);  /* fill in missing items (tm_wday, tm_yday) */
+    if ( (RSTRING(buf)->len = strftime(pb, 128, pf, &t)) > 0 )
+      return buf;
+  }
+
+  /* fall back on Ruby implementation if libc's strftime fails */
+  return rb_funcall2(self, id_strftime_without_performance, argc, argv);
+}
+
+
+/*
+ * Date::strptime(str="-4712-01-01", fmt='%F')
+ */
+static VALUE
+rb_date_strptime(int argc, VALUE * argv, VALUE self)
+{
+  char *pe;
+  struct tm buf;
+  VALUE str = (argc > 0 ? argv[0] : rb_str_new2("-4712-01-01")),
+        fmt = (argc > 1 ? argv[1] : DEFAULT_FORMAT),
+        sg  = (argc > 2 ? argv[2] : ITALY);
+  char * ps = RSTRING(str)->ptr;
+  char * pf = RSTRING(fmt)->ptr;
+  VALUE parts[4];
+
+  /* fast path default format */
+  if ( (pf[0] == '%' && pf[1] == 'F' && pf[0])
+    || (pf[0] == '%' && pf[1] == 'Y' && pf[2] == '-' 
+     && pf[3] == '%' && pf[4] == 'm' && pf[5] == '-'
+     && pf[6] == '%' && pf[7] == 'd' && pf[8] == 0) )
+  {
+    parts[0] = INT2FIX(strtol(ps, &pe, 10));
+    parts[1] = Qnil;
+    parts[2] = Qnil; 
+    parts[3] = sg;
+    if( pe == ps + 4 )  { 
+      parts[1] = INT2FIX(strtol(ps + 5, &pe, 10));
+      if ( pe == ps + 7 ) { 
+        parts[2] = INT2FIX(strtol(ps + 8, &pe, 10));
+        if ( pe == ps + 10 )
+          return rb_date_new(4, (VALUE*)&parts, self);
+      }
+    }
+  }
+
+  /* fall back on strptime(3) */
+  if ( strptime(ps, pf, &buf) )
+  {
+    parts[0] = INT2FIX(buf.tm_year + 1900);
+    parts[1] = INT2FIX(buf.tm_mon  + 1);
+    parts[2] = INT2FIX(buf.tm_mday);
+    parts[3] = sg;
+    return rb_date_new(4, (VALUE*)&parts, self);
+  }
+
+  /* if that doesn't work, fall back on Ruby implementation */
+  return rb_funcall2(self, id_strptime_without_performance, argc, argv);
+}
+
+/*
+ * Date::<=>(other)
+*/
+static VALUE
+rb_date_compare(int argc, VALUE * argv, VALUE self)
+{
+  if (NIL_P(argv[0]))
+    return Qnil;
+  long other_den = -1;
+  long other_num = -1;
+  if (FIXNUM_P(argv[0])) {
+    //compare with argument as with astronomical julian day number
+    other_den = 1;
+    other_num = FIX2LONG(argv[0]);
+  } else if (rb_obj_is_kind_of(argv[0], rb_cDate)) {
+    VALUE other_date = argv[0];
+    VALUE other_ajd = rb_ivar_get(other_date, id_ivar_ajd);
+    other_den = FIX2LONG(rb_funcall(other_ajd, id_denominator, 0));
+    other_num = FIX2LONG(rb_funcall(other_ajd, id_numerator, 0));
+  } else {
+    return Qnil;
+  }
+  
+  VALUE ajd = rb_ivar_get(self, id_ivar_ajd);
+  long den = FIX2LONG(rb_funcall(ajd, id_denominator, 0));
+  long num = FIX2LONG(rb_funcall(ajd, id_numerator, 0));
+
+  long v = (num * other_den) - (other_num * den);
+  if (v > 0)
+    return INT2FIX(1);
+  else if (v < 0)
+    return INT2FIX(-1);
+  else
+    return INT2FIX(0);
+}
+
+
+VALUE
+Init_date_performance() {
+  /* initialization is not idemponent - make sure it only happens once. */
+  if ( initialized )
+    rb_raise(rb_eStandardError, "date_performance extension already initialized.");
+  initialized = 1;
+
+  /* Grab Date class */
+  rb_require("date");
+  rb_cDate = rb_define_class("Date", rb_cObject);
+  
+  if( ! rb_const_defined_from(rb_cDate, rb_intern("Performance")) ) 
+    rb_raise(rb_eStandardError, 
+        "Date::Performance not defined. The date_performance extension can not be required directly.");
+
+  /* Date Instance Methods */
+  rb_define_method(rb_cDate, "civil",        rb_date_civil, 0);
+  rb_define_method(rb_cDate, "sys_strftime", rb_date_strftime, -1);
+  rb_define_method(rb_cDate, "strftime",     rb_date_strftime, -1);
+  rb_define_method(rb_cDate, "<=>",          rb_date_compare, -1);
+
+  /* Date Singleton Methods */
+  rb_define_singleton_method(rb_cDate, "civil_to_jd",   rb_date_civil_to_jd, -1);
+  rb_define_singleton_method(rb_cDate, "jd_to_civil",   rb_date_jd_to_civil, -1);
+  rb_define_singleton_method(rb_cDate, "jd_to_ajd",     rb_date_jd_to_ajd, -1);
+  rb_define_singleton_method(rb_cDate, "ajd_to_jd",     rb_date_ajd_to_jd, -1);
+  rb_define_singleton_method(rb_cDate, "new",           rb_date_new, -1);
+  rb_define_singleton_method(rb_cDate, "civil",         rb_date_new, -1);
+  rb_define_singleton_method(rb_cDate, "sys_strptime",  rb_date_strptime, -1);
+  rb_define_singleton_method(rb_cDate, "strptime",      rb_date_strptime, -1);
+
+  /* Date Related Constants */
+  JULIAN = rb_eval_string("Date::JULIAN");
+  GREGORIAN = rb_eval_string("Date::GREGORIAN");
+  ITALY = INT2FIX(2299161);
+
+  DEFAULT_FORMAT = rb_str_new2("%F");
+  rb_gc_register_address(&DEFAULT_FORMAT);
+
+  /* Symbol Constants */
+  id_subtract = rb_intern("-");
+  id_add = rb_intern("+");
+  id_divmod = rb_intern("divmod");
+  id_new = rb_intern("new");
+  id_jd = rb_intern("jd");
+  id_ivar_ajd = rb_intern("@ajd");
+  id_jd_to_civil = rb_intern("jd_to_civil");
+  id_ivar_civil = rb_intern("@__civil__");
+  id_ivar_sg = rb_intern("@sg");
+  id_new_bang = rb_intern("new!");
+  id_numerator = rb_intern("numerator");
+  id_denominator = rb_intern("denominator");
+  id_strptime_without_performance = rb_intern("strptime_without_performance");
+  id_strftime_without_performance = rb_intern("strftime_without_performance");
+
+  /* Rational Stuff */
+  rb_require("rational");
+  rb_cRational = rb_define_class("Rational", rb_cNumeric);
+  ra_one_half = rb_funcall(rb_cRational, id_new, 2, INT2FIX(1), INT2FIX(2));
+  rb_gc_register_address(&ra_one_half);
+  return Qnil;
+}
+
+#include <stdlib.h>  /* for malloc, free */
+#include <string.h>  /* for memcmp, memmove */
+#include "ruby.h"
+
+// typdefs!
+typedef enum { false = 0, true} bool;
+
+typedef struct node {
+	char character;
+	VALUE value;
+	struct node * first_child;
+	struct node * next_sibling;
+} trie_node;
+
+static VALUE rb_cTrie;
+
+// =========================
+// = function declarations =
+// =========================
+
+//trie implementation
+static trie_node * trie_node_for_key(trie_node * root, char * key, bool create_missing_nodes);
+static trie_node * trie_sibling_for_char(trie_node * node, char ch);
+static trie_node * trie_add_sibling_for_char(trie_node * node, char ch);
+static trie_node * trie_new_node_with_char(char ch);
+static trie_node * trie_new_node();
+static void trie_traverse(trie_node * trie, void (*lambda_func)(void *));
+static void free_trie(trie_node * trie);
+
+
+// ========================
+// = function definitions =
+// ========================
+
+// instance methods
+static VALUE rb_trie_get_key(VALUE self, VALUE key) {
+	trie_node * root;
+	trie_node * node;
+	char * key_cstring;
+	
+	//Check_Type(key, T_STRING);
+	key_cstring = StringValuePtr(key);
+
+	Data_Get_Struct(self, trie_node, root);
+	
+	node = trie_node_for_key(root, key_cstring, false);
+	if (node == NULL) return Qnil;
+	return node->value;
+}
+
+static VALUE rb_trie_set_key_to_value(VALUE self, VALUE key, VALUE value) {
+	trie_node * root;
+	trie_node * node;
+	char * key_cstring;
+	
+	//Check_Type(key, T_STRING);
+	key_cstring = StringValuePtr(key);
+
+	Data_Get_Struct(self, trie_node, root);
+
+	node = trie_node_for_key(root, key_cstring, true);	
+	node->value = value;
+	
+	return Qnil;
+}
+
+static VALUE rb_trie_undef_key(VALUE self, VALUE key) {
+	trie_node * root, * node, * prev, * next;
+	VALUE return_value;	
+	char * key_cstring;
+	int steps;
+	int i;
+	
+	//Check_Type(key, T_STRING);
+	key_cstring = StringValuePtr(key);
+	
+	Data_Get_Struct(self, trie_node, root);
+	next = root;
+	node = NULL;
+	prev = NULL;
+
+	steps = strlen(key_cstring);
+	
+	for (i = 0; i < steps; i++) {
+		if (next == NULL) return Qnil;
+		
+		while(next->character != key_cstring[i]) {
+			if (next == NULL) return Qnil;
+			next = next->next_sibling;
+		}
+		prev = node;
+		node = next;
+		next = node->first_child;
+	}
+	
+	return_value = node->value;
+	node->value = Qnil;
+	
+	if (node->first_child == NULL) { //node has no children. we can delete it.
+		if (prev == NULL)  {
+			//printf("should delete root");
+		} else if (prev->first_child == node) {
+			prev->first_child = node->next_sibling;
+			free(node);
+		} else if (prev->next_sibling == node) {
+			prev->next_sibling = node->next_sibling;
+			free(node);
+		}
+	}
+	
+	return return_value;
+}
+
+// garbage collection and allocation
+static void trie_mark_value(void * t) {	
+	rb_gc_mark( ((trie_node *)t)->value );
+}
+
+static void rb_trie_mark(trie_node * t) {
+	trie_traverse(t, trie_mark_value);
+}
+
+static void rb_trie_free(trie_node * t) {
+	free_trie(t);
+}
+
+static VALUE rb_trie_allocate (VALUE klass) {
+	trie_node * t = trie_new_node();
+
+	return Data_Wrap_Struct(klass, rb_trie_mark, rb_trie_free, t);
+}
+
+// extension init
+void Init_trie() {
+	rb_cTrie = rb_define_class("Trie", rb_cObject);
+
+	rb_define_alloc_func (rb_cTrie, rb_trie_allocate);
+
+	int arg_count = 0;
+	//rb_define_method(rb_cTrie, "inspect", rb_trie_inspect, arg_count);
+	
+	arg_count = 1;
+	rb_define_method(rb_cTrie, "[]", rb_trie_get_key, arg_count);
+	rb_define_method(rb_cTrie, "delete", rb_trie_undef_key, arg_count);
+
+	arg_count = 2;
+	rb_define_method(rb_cTrie, "[]=", rb_trie_set_key_to_value, arg_count);
+}
+
+
+// =======================
+// = trie implementation =
+// =======================
+
+static trie_node * trie_node_for_key(trie_node * root, char * key, bool create_missing_nodes) {		
+	int steps, i;
+	trie_node * next, * node;
+
+	steps = strlen(key);
+	next = root;
+
+	for (i = 0; i < steps; i++) {
+		if (next == NULL) {
+			if (create_missing_nodes) {
+				node->first_child = trie_new_node();
+				next = node->first_child;
+			}
+			else return NULL;
+		}
+
+		node = trie_sibling_for_char(next, key[i]);
+
+		if (node == NULL) {
+			if (create_missing_nodes) {
+				node = trie_add_sibling_for_char(next, key[i]);
+			}	
+			else return NULL;
+		}
+
+		next = node->first_child;
+	}	
+		
+	return node;    
+}
+
+static trie_node * trie_sibling_for_char(trie_node * node, char ch) {
+	while(true) {
+		if (node == NULL) return NULL;
+
+		if (node->character == ch) return node;
+
+		node = node->next_sibling;
+	}
+	return node;
+}
+
+static trie_node * trie_add_sibling_for_char(trie_node * node, char ch) {
+	trie_node * current_next;
+
+	current_next = node->next_sibling;
+	node->next_sibling = trie_new_node_with_char(ch);
+	node->next_sibling->next_sibling = current_next;
+
+	return node->next_sibling;
+}
+
+static trie_node * trie_new_node_with_char(char ch) {
+	trie_node * trie;
+	trie = malloc(sizeof(trie_node));
+	trie->character = ch;
+	trie->value = Qnil;
+	trie->first_child = NULL;
+	trie->next_sibling = NULL;
+	return trie;
+}
+
+static trie_node * trie_new_node() {
+	return trie_new_node_with_char('s'); //insert most common starting letter here.
+}
+
+static void trie_traverse(trie_node * trie, void (* lambda_func)(void *)) {
+	if (trie->next_sibling != NULL) {
+		trie_traverse(trie->next_sibling, lambda_func);
+	}
+
+	if (trie->first_child != NULL) {
+		trie_traverse(trie->first_child, lambda_func);
+	}
+
+	lambda_func(trie);
+}
+
+static void free_trie(trie_node * trie) {
+	trie_traverse(trie, free);
+}
+#include <xml_cdata.h>
+
+/*
+ * call-seq:
+ *  new(document, content)
+ *
+ * Create a new CData element on the +document+ with +content+
+ */
+static VALUE new(int argc, VALUE *argv, VALUE klass)
+{
+  xmlDocPtr xml_doc;
+  VALUE doc;
+  VALUE content;
+  VALUE rest;
+
+  rb_scan_args(argc, argv, "2*", &doc, &content, &rest);
+
+  Data_Get_Struct(doc, xmlDoc, xml_doc);
+
+  xmlNodePtr node = xmlNewCDataBlock(
+      xml_doc->doc,
+      Qnil == content ? NULL : (const xmlChar *)StringValuePtr(content),
+      Qnil == content ? 0 : RSTRING_LEN(content)
+  );
+
+  NOKOGIRI_ROOT_NODE(node);
+
+  VALUE rb_node = Nokogiri_wrap_xml_node(klass, node);
+  rb_funcall2(rb_node, rb_intern("initialize"), argc, argv);
+
+  if(rb_block_given_p()) rb_yield(rb_node);
+
+  return rb_node;
+}
+
+VALUE cNokogiriXmlCData;
+void init_xml_cdata()
+{
+  VALUE nokogiri = rb_define_module("Nokogiri");
+  VALUE xml = rb_define_module_under(nokogiri, "XML");
+  VALUE node = rb_define_class_under(xml, "Node", rb_cObject);
+  VALUE text = rb_define_class_under(xml, "Text", node);
+
+  /*
+   * CData represents a CData node in an xml document.
+   */
+  VALUE klass = rb_define_class_under(xml, "CDATA", text);
+
+
+  cNokogiriXmlCData = klass;
+
+  rb_define_singleton_method(klass, "new", new, -1);
+}
+
+#include <xml_comment.h>
+
+/*
+ * call-seq:
+ *  new(document, content)
+ *
+ * Create a new Comment element on the +document+ with +content+
+ */
+static VALUE new(int argc, VALUE *argv, VALUE klass)
+{
+  xmlDocPtr xml_doc;
+  VALUE document;
+  VALUE content;
+  VALUE rest;
+
+  rb_scan_args(argc, argv, "2*", &document, &content, &rest);
+
+  Data_Get_Struct(document, xmlDoc, xml_doc);
+
+  xmlNodePtr node = xmlNewDocComment(
+      xml_doc,
+      (const xmlChar *)StringValuePtr(content)
+  );
+
+  VALUE rb_node = Nokogiri_wrap_xml_node(klass, node);
+  rb_funcall2(rb_node, rb_intern("initialize"), argc, argv);
+
+  NOKOGIRI_ROOT_NODE(node);
+
+  if(rb_block_given_p()) rb_yield(rb_node);
+
+  return rb_node;
+}
+
+VALUE cNokogiriXmlComment;
+void init_xml_comment()
+{
+  VALUE nokogiri = rb_define_module("Nokogiri");
+  VALUE xml = rb_define_module_under(nokogiri, "XML");
+  VALUE node = rb_define_class_under(xml, "Node", rb_cObject);
+
+  /*
+   * Comment represents a comment node in an xml document.
+   */
+  VALUE klass = rb_define_class_under(xml, "Comment", node);
+
+
+  cNokogiriXmlComment = klass;
+
+  rb_define_singleton_method(klass, "new", new, -1);
+}
